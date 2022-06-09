@@ -409,13 +409,29 @@ This might be a good place to talk about core concepts and how they relate.
 
 ### Risks and Mitigations
 
-<!-- Increased complexity of the Job management, by interaction with some of
-already exiting Job configuration options. To mitigate this, we introduce
-minimal API which will allow to satisfy the main usage scenario.-->
+#### Risk 1
 
-The Pod status (which includes exit codes) could be lost if the failed pod is garbage collected.
-First, it should be rather rare so the overall consequence of unnecessary pod restarts
-will be limited. Second, we can prevent this by using the feature of
+The list of available options for `reason` field will be evolving with new
+values being added and potentially some values becoming obsolete. This can make
+it difficult to maintain a valid list of reasons enumerated in the
+Job configuration.
+
+First, the users of the Job configuration will be able to mitigate it with the
+API which will allow them to specify that any failure of pod with non-empty
+`status.reason` can be ignored. This will eliminate the need of listing all the
+values. Second, if a user decides to list of all `reasons` to be ignored, the
+consequence of a new reason added in a new version of kubernetes is limited -
+the failed pod will increment the counter towards the `backoffLimit` which is
+the current behaviour.
+
+#### Risk 2
+
+The Pod status (which includes the `reason` field and the container exit codes)
+could be lost if the failed pod is garbage collected.
+
+First, it should be rather
+rare so the overall consequence of unnecessary pod restarts will be limited.
+Second, we can prevent this by using the feature of
 [job tracking with finalizers](https://kubernetes.io/docs/concepts/overview/working-with-objects/finalizers/).
 
 <!--
