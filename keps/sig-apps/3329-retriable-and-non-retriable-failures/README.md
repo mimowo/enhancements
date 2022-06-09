@@ -189,7 +189,7 @@ to account for infrastructure failures.
 Currently, kubernetes Job API offers a way to account for infrastructure
 failures by setting `.backoffLimit > 0`. However, this mechanism intructs the
 job controller to restart all failed pods - regardless of the root cause
-of the failures. However, in some scenarios this leads to unnecessary
+of the failures. Thus, in some scenarios this leads to unnecessary
 restarts of many pods, resulting in a waste of time and computational
 resources. What makes the restarts more expensive is the fact that the
 failures may be encountered late in the execution time of a program.
@@ -210,8 +210,8 @@ Some third-party frameworks have implemented retry policies for their pods:
 Additionally, some pod failures are not linked with the container execution,
 but rather with the internal kubernetes cluster management (see:
 [Scheduling, Preemption and Eviction](https://kubernetes.io/docs/concepts/scheduling-eviction/pod-priority-preemption/)).
-Such pod failures should be recongnized as retriable and should not increment
-the counter for `backoffLimit`.
+Such pod failures should be recongnized as infrastructure failures and should
+not increment the counter for `backoffLimit`.
 
 <!--
 This section is for explicitly listing the motivation, goals, and non-goals of
@@ -226,11 +226,16 @@ demonstrate the interest in a KEP within the wider Kubernetes community.
 
 - Extension of Job API with user-friendly syntax to terminate jobs based on:
   * container exit codes
-  * `status.reason` field of a failed pod
+  * `status.reason` field of a failed pod.
 - Extensible API which will allow to implement support for other indicators
   of non-retriable jobs in the future, for example based on the termination
   logs (see: [Determine the Reason for Pod Failure](https://kubernetes.io/docs/tasks/debug/debug-application/determine-reason-pod-failure/)).
 
+<!--
+TODO: consider adding the point:
+- Review of the places where the `DeleteOptions` structure is used to delete
+  pods and specification of the `reason` field in these contexts.
+-->
 <!--
 List the specific goals of the KEP. What is it trying to achieve? How will we
 know that this has succeeded?
@@ -238,9 +243,16 @@ know that this has succeeded?
 
 ### Non-Goals
 
-- Implementation of other indicators of non-retirable jobs such as termination logs
-- Allowing for all indexes of an indexed-job to execute when only one or a few indexes fail
-[#109712](https://github.com/kubernetes/kubernetes/issues/109712).
+- Implementation of other indicators of non-retirable jobs such as termination logs.
+- Modificaiton of the semantics for job termination. In particular, allowing for
+  all indexes of an indexed-job to execute when only one or a few indexes fail
+  [#109712](https://github.com/kubernetes/kubernetes/issues/109712).
+
+<!--
+TODO: consider adding the point:
+- Specification of the `reason` field in the `DeleteOptions` structure when
+  it is used to delete other kubernetes resources than pods.
+-->
 
 <!--
 What is out of scope for this KEP? Listing non-goals helps to focus discussion
@@ -249,10 +261,17 @@ and make progress.
 
 ## Proposal
 
-Extension of the Job API with a new field which allows to configure the set of conditions
-which determine how a pod failure is handled. We extend the Job API to support discrimination
-of pod failures based on container exit codes as well as the pod's `status.reason` field.
+Extension of the Job API with a new field which allows to configure the set of
+conditions which determine how a pod failure is handled. We extend the Job API
+to support discrimination of pod failures based on container exit codes as well
+as the pod's `status.reason` field.
 
+<!--
+The value of status.reason I found used by k8s currently is:
+	// NodeUnreachablePodReason is the reason on a pod when its state cannot be confirmed as kubelet is unresponsive
+	// on the node it is (was) running.
+NodeUnreachablePodReason = "NodeLost" (defined on node.go)
+-->
 The pod's `status.reason` field is currently defined but used in few situations.
 We extend its use to store the reason of a pod's failure when originated by
 a kubernetes component (kube-scheduler, kubelet, pod-gc, etc.). To achieve this
@@ -260,18 +279,18 @@ we extend the Pod delete API to pass the reason for pod termination. Such
 failures can typically be associated with some cluster-management actions and
 should be retried.
 
-We use the main job controller main loop to detect and categorize the pod failures
-with respect to the configuration. For each failed pod, one of the following actions
-is applied:
-- terminate the job (`non-retriable` failure),
-- ignore the failure (`retriable` failure) - restart the pod and do not increment the counter
-  for `backoffLimit`,
-- increment the `backoffLimit` counter and restart the pod if the limit is not reached
-  (current behaviour).
+Additionally, we review all the currently existing places were the delete API
+is invoked to delete pods in order to modify the code to pass a meaningful
+reason based on the invocation context.
 
-<!--
-TODO: check what happens currently when a job is marked as terminated
--->
+We use the main job controller main loop to detect and categorize the pod failures
+with respect to the configuration. For each failed pod, one of the following
+actions is applied:
+- terminate the job (`non-retriable` failure),
+- ignore the failure (`retriable` failure) - restart the pod and do not increment
+  the counter for `backoffLimit`,
+- increment the `backoffLimit` counter and restart the pod if the limit is not
+  reached (current behaviour).
 
 <!--
 This is where we get down to the specifics of what the proposal actually is.
@@ -306,9 +325,9 @@ failing due to the bugs in code of the executable, so that the computation resou
 can be saved.
 
 Occasionally, our executable fails, but it can be safely restarted with a good
-change of succeeding the next time. In such known retriable situations our
-executable exits with a dedicated exit code in range 40-50. All remaining exit
-codes indicate a software bug and should result in early job termination.
+chance of succeeding the next time. In such known retriable situations our
+executable exits with a dedicated exit code in the 40-50 range. All remaining
+exit codes indicate a software bug and should result in an early job termination.
 
 The following Job configuration could be a good starting point to satisfy
 my needs:
@@ -325,8 +344,8 @@ spec:
         command: ["./program"]
   backoffLimit: 3
   backoffPolicy:
-    onConditions:
-    - containerExitCode: 1-39,51-255
+    rules:
+    - containerExitCodeNotIn: 40-50
       action: Terminate
 ```
 
@@ -357,8 +376,25 @@ spec:
         command: ["./monitoring"]
   backoffLimit: 3
   backoffPolicy:
-    onConditions:
-    - podStatusReason: Preemption,NodePressureEviction
+    rules:
+    - podStatusReasonIn:
+      - Preemption
+      - NodePressureEviction
+      action: Ignore
+```
+
+Note that, in this case the user supplies a list of pod's `status.reason` values
+which are interpreted as infrastructure failures. This approach is likely to
+require an iterative process to review and extend of the list. In order to
+avoid the process some users may prefer to interpret any non-empty `status.reason`
+as an infrastructure failure this can be achieved with the following syntax for
+`backoffPolicy`:
+
+```yaml
+  backoffPolicy:
+    rules:
+    - podStatusReasonNotIn:
+      - ''
       action: Ignore
 ```
 
@@ -377,7 +413,7 @@ This might be a good place to talk about core concepts and how they relate.
 already exiting Job configuration options. To mitigate this, we introduce
 minimal API which will allow to satisfy the main usage scenario.-->
 
-The Pod status (which includes exit codes) coule be lost if the failed pod is garbage collected.
+The Pod status (which includes exit codes) could be lost if the failed pod is garbage collected.
 First, it should be rather rare so the overall consequence of unnecessary pod restarts
 will be limited. Second, we can prevent this by using the feature of
 [job tracking with finalizers](https://kubernetes.io/docs/concepts/overview/working-with-objects/finalizers/).
@@ -411,6 +447,16 @@ type DeleteOptions struct {
 }
 ```
 
+The `reason` field will be used by kubernetes components (such as:
+kube-scheduler, kubelet pod-gc) when they send the delete operation. During
+the implementation process, we are going to review the places were the
+`DeleteOptions` is used to delete pods and add the `reason` field based on the
+invocation context.
+
+Notably, the `reason` field might be useful to be supplied when deleting other
+types of kubernetes resources, but supplying the field in other contexts is
+beyond this KEP.
+
 In the case of Pods, kube-apiserver will store the received `reason` in the
 already existing `reason` field in the `PodStatus`:
 ```
@@ -424,9 +470,6 @@ type PodStatus struct {
   ...
 }
 ```
-<!--
-TODO: Also explain how kube-scheduler, pkg/controller/podgc and pkg/controller/nodelifecycle will use this new DeleteOption field.
--->
 
 ### JobSpec API
 
@@ -434,13 +477,13 @@ We extend the Job API in order to allow to apply different actions depending
 on the conditions associated with the pod failure.
 
 ```golang
-// BackoffPolicyAction specifies how a Pod failure is handled
+// BackoffPolicyAction specifies how a Pod failure is handled.
 type BackoffPolicyAction string
 
 const (
 
 	// This is an action which might be taken on pod failure - mark the
-	// pod's job as Failed
+	// pod's job as Failed.
 	TerminateBackoffAction BackoffPolicyAction = "Terminate"
 
 	// This is an action which might be taken on pod failure - the pod will be
@@ -449,51 +492,69 @@ const (
 
 )
 
-// BackoffPolicyActionWithConditions specifies the action taken on a pod failure
-// and the conditions which need to be satisfied to take the specified action
-type BackoffPolicyActionWithConditions struct {
+// BackoffPolicyRule specifies a backoff policy rule, which comprises an action
+// taken on a pod failure and the condition which needs to be satisfied to take
+// the action.
+type BackoffPolicyRule struct {
 
-	// Specifies the action taken on a pod failure if all the specified
-	// conditions are satisfied
+	// Specifies the action taken on a pod failure when the condition is satisfied.
 	Action BackoffPolicyAction
 
 	// Restricts the check for exit codes to only apply to the container with
-	// the specified name.
+	// the specified names.
 	// +optional
 	ContainerName *string
 
-	// Specifies the comma-separated list of exit codes or ranges of exit codes
+	// Specifies the rule condition by the comma-separated list of exit codes or
+	// ranges of exit codes. The condition is satisfied if the actual container's
+	// code is in any of the ranges.
 	// +optional
-	ContainerExitCode *string
+	ContainerExitCodeIn *string
 
-	// Specifies the comma-separated list of reasons for the pod failure
+	// Specifies the rule condition by the comma-separated list of exit codes or
+	// ranges of exit codes. The condition is satisfied if the actual container's
+	// code is not in any of the the ranges.
 	// +optional
-	PodStatusReason *string
+	ContainerExitCodeNotIn *string
+
+	// Specifies the rule condition by a list of values for the failed pod's
+	// status reason. The condition is satisfied when the actual value of the
+	// status.reason field equals any of the listed values.
+	// +optional
+	PodStatusReasonIn *[]string
+
+	// Specifies the rule condition by a list of values for the failed pod's
+	// status reason. The condition is satisfied when the actual value of the
+	// status.reason field does not equal any of the listed values.
+	// +optional
+	PodStatusReasonNotIn *[]string
 }
 
-// BackoffPolicy describes the handling of failed pods. The OnConditions field
-// allows to specify the set of actions and the conditions which need to be
-// satisfied to take this action
+// BackoffPolicy describes the handling of failed pods. The Rules field specifies
+// the list of rules. Each rule specifies an action to be taken on a pod
+// failure and a condition to be checked if the rule applies.
 type BackoffPolicy struct {
-	OnConditions []BackoffPolicyActionWithConditions
+	Rules []BackoffPolicyRule
 }
 
 // JobSpec describes how the job execution will look like.
 type JobSpec struct {
   ...
-	// Specifies the policy of handling failed pods, by specifying the list of conditions
-	// and actions which should be taken if the pod failure satisfies them
-	// If empty, the failed pod counter is incremented and it is checked against the BackoffLimit
+	// Specifies the policy of handling failed pods. In particular, it allows to
+	// specify the set of actions and conditions which need to be
+	// satisfied to take the associated action.
+	// If empty, the default behaviour applies - the counter of pod failed is
+	// incremented and it is checked against the backoffLimit
 	// +optional
 	BackoffPolicy *BackoffPolicy
   ...
 ```
 
-<!-- TODO:
-It would be useful for compute providers to be able to say something like: "any infrastructure error" without having to list all of them. Most likely, the way to express this would be something like: anything that is not an empty reason, because when a pod fails on its own kubelet doesn't introduce a reason.
-
-Alternatives are to use regex or an expression matcher (similar to a label selector) as we discussed offline.
--->
+Additionally, we validate the following constraints for each instance of `BackoffPolicyRule`:
+- exactly one of the following fields is used:`ContainerExitCodeIn`,
+ `ContainerExitCodeNotIn`, `PodStatusReasonIn`, `PodStatusReasonNotIn`.
+- the `ContainerName` is only combined with the fields `ContainerExitCodeIn` or
+ `ContainerExitCodeNotIn`.
 
 Here is an example Job configuration which uses this API:
 
@@ -512,11 +573,12 @@ spec:
         command: ["./monitoring"]
   backoffLimit: 3
   backoffPolicy:
-    onConditions:
-    - containerExitCode: 1-12,100-127
+    rules:
+    - containerExitCodeIn: 1-12,100-127
       containerName: main-job-container
       action: Terminate
-    - podStatusReason: Preemption,NodePressureEviction
+    - podStatusReasonNotIn:
+      - ''
       action: Ignore
 ```
 
@@ -1061,11 +1123,13 @@ exit codes.
 ```golang
 type BackoffPolicyOnExitCodeCondition struct {
 	ContainerName *string
-	ValueIn       string
+	ValueIn       *string
+	ValueNotIn    *string
 }
 
 type BackoffPolicyOnPodStatusCondition struct {
-	ReasonIn string
+	ReasonIn      *[]string
+	ReasonNotIn   *[]string
 }
 
 type BackoffPolicyCondition struct {
@@ -1073,13 +1137,13 @@ type BackoffPolicyCondition struct {
 	OnPodStatus         *BackoffPolicyOnPodStatusCondition
 }
 
-type BackoffPolicyActionWithConditions struct {
+type BackoffPolicyRule struct {
 	Action    BackoffPolicyAction
 	Condition BackoffPolicyCondition
 }
 
 type BackoffPolicy struct {
-	OnConditions []BackoffPolicyActionWithConditions
+	Rules []BackoffPolicyRule
 }
 ```
 
@@ -1099,43 +1163,23 @@ spec:
         command: ["./monitoring"]
   backoffLimit: 3
   backoffPolicy:
-    onConditions:
+    rules:
     - action: Terminate
       onContainerExitCode:
         valueIn: 1-12,100-127
         containerName: main-job-container
     - action: Ignore
       onPodStatus:
-        reasonIn: Preemption,NodePressureEviction
+        reasonIn:
+        - Preemption
+        - NodePressureEviction
 ```
 
 ### Alternative 2
 
-Aims to cleanup the currently unnecessary nesting level of "onConditions" - it
-is a little bit confusing as the conditions also embrace actions.
-
-```golang
-type BackoffPolicyOnExitCodeCondition struct {
-	ContainerName *string
-	ValueIn       string
-}
-
-type BackoffPolicyOnPodStatusCondition struct {
-	ReasonIn string
-}
-
-type BackoffPolicyCondition struct {
-	OnContainerExitCode *BackoffPolicyOnExitCodeCondition
-	OnPodStatus         *BackoffPolicyOnPodStatusCondition
-}
-
-type BackoffPolicyActionWithConditions struct {
-	Action    BackoffPolicyAction
-	Condition BackoffPolicyCondition
-}
-
-type BackoffPolicy []BackoffPolicyActionWithConditions
-```
+Aims to introduce more re-usable and flexible API for defining the conditions
+based on container exit codes or pod status. It would be based on the idea
+used to specify the `matchExpressions` field (see: [Labels and Selectors](https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#:~:text=matchExpressions%20is%20a%20list%20of,satisfied%20in%20order%20to%20match.)).
 
 Example:
 ```yaml
@@ -1148,16 +1192,22 @@ spec:
       - name: main-job-container
         image: job-image
         command: ["./program"]
+      - name: monitoring-job-container
+        image: job-monitoring
+        command: ["./monitoring"]
   backoffLimit: 3
   backoffPolicy:
-  - action: Terminate
-    onContainerExitCode:
-      valueIn: 1-12,100-127
-  - action: Ignore
-    onPodStatus:
-      reasonIn: Preemption,NodePressureEviction
+    rules:
+    - action: Terminate
+      onContainerExitCode:
+        valueExpressions:
+        - {operator: NotIn, values: [40-50]}
+        containerName: main-job-container
+    - action: Ignore
+      onPodStatus:
+        reasonExpressions:
+        - {operator: In, values: [Preemption, NodePressureEviction]}
 ```
-
 <!--
 What other approaches did you consider, and why did you rule them out? These do
 not need to be as detailed as the proposal, but should include enough
