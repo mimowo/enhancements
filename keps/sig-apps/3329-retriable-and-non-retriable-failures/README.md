@@ -803,9 +803,10 @@ well as the [existing list] of feature gates.
 [existing list]: https://kubernetes.io/docs/reference/command-line-tools-reference/feature-gates/
 -->
 
-- [ ] Feature gate (also fill in values in `kep.yaml`)
-  - Feature gate name:
+- [x] Feature gate (also fill in values in `kep.yaml`)
+  - Feature gate name: RetriableAndNonRetriableFailures
   - Components depending on the feature gate:
+    - kube-controller-manager
 - [ ] Other
   - Describe the mechanism:
   - Will enabling / disabling the feature require downtime of the control
@@ -815,12 +816,23 @@ well as the [existing list] of feature gates.
 
 ###### Does enabling the feature change any default behavior?
 
+Yes. The kubernetes components (kube-scheduler and kube-controller-manager) will
+extend the Pod delete requests with the `reason` field. The kube-apiserver
+will store the reason in the pod's `status.reason` field.
+
+However, the part of the feature responsible for handling of the failed pods
+is opt-in with `.spec.backoffPolicy`.
 <!--
 Any change of default behavior may be surprising to users or break existing
 automations, so be extremely careful here.
 -->
 
 ###### Can the feature be disabled once it has been enabled (i.e. can we roll back the enablement)?
+
+Yes. Using the feature gate is the recommended way. When the feature is disabled
+the terminated pods continue to get the `status.reason` field set. However,
+the Job controller manager will handle pod failures in the default way even if
+`spec.backoffPolicy` is specified.
 
 <!--
 Describe the consequences on existing workloads (e.g., if this is a runtime
@@ -835,7 +847,12 @@ NOTE: Also set `disable-supported` to `true` or `false` in `kep.yaml`.
 
 ###### What happens if we reenable the feature if it was previously rolled back?
 
+The Job controller starts to handle pod failures according to the specified
+`spec.backoffPolicy`.
+
 ###### Are there any tests for feature enablement/disablement?
+
+Yes, unit and integration test for the feature enabled, disabled and transitions.
 
 <!--
 The e2e framework does not currently support enabling or disabling feature
@@ -999,6 +1016,8 @@ previous answers based on experience in the field.
 
 ###### Will enabling / using this feature result in any new API calls?
 
+No.
+
 <!--
 Describe them, providing:
   - API call type (e.g. PATCH pods)
@@ -1014,6 +1033,7 @@ Focusing mostly on:
 
 ###### Will enabling / using this feature result in introducing new API types?
 
+No.
 <!--
 Describe them, providing:
   - API type
@@ -1023,6 +1043,7 @@ Describe them, providing:
 
 ###### Will enabling / using this feature result in any new calls to the cloud provider?
 
+No.
 <!--
 Describe them, providing:
   - Which API(s):
@@ -1031,6 +1052,7 @@ Describe them, providing:
 
 ###### Will enabling / using this feature result in increasing size or count of the existing API objects?
 
+Yes. The `DeleteOptions` structure is extended by the `reason` field.
 <!--
 Describe them, providing:
   - API type(s):
@@ -1040,6 +1062,7 @@ Describe them, providing:
 
 ###### Will enabling / using this feature result in increasing time taken by any operations covered by existing SLIs/SLOs?
 
+No.
 <!--
 Look at the [existing SLIs/SLOs].
 
@@ -1050,6 +1073,11 @@ Think about adding additional work or introducing new steps in between
 -->
 
 ###### Will enabling / using this feature result in non-negligible increase of resource usage (CPU, RAM, disk, IO, ...) in any components?
+
+Additional CPU and memory increase in kubernetes components with regards to the
+handling of the `reason` field is negligible. The additional CPU and memory
+increase in kube-controller-manager related to handling of failed pods is also
+negligible and only limited to these jobs which specify `spec.backoffPolicy`.
 
 <!--
 Things to keep in mind include: additional in-memory state, additional
