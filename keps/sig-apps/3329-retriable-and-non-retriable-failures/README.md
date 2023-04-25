@@ -781,11 +781,16 @@ may suggest a software bug due to which the pod executes longer than expected.
 On the other hand, it might be due node CPU pressure caused by other processes
 on the node. Thus, in order to give users freedom of handling this situation we
 should introduce a dedicated pod condition type, such as `ActiveDeadlineExceeded`.
-However, as the feature focuses on scenarios which can be naturally interpreted
-in terms of retriability and evolving Pod condition types
-(see [evolving condition types](#evolving-condition-types)) are a concern we decide
-to do not add any pod condition in this case. It should be re-considered in the
-future if there is a good motivating use-case.
+
+For, 1.28 we are going to add the `ActiveDeadlineExceeded` condition to allow
+users to match pods which exceeded the timeout (regardless of the exit code),
+to fix the scenario raised in the issue:
+[Pod Failure Policy Edge Case: Job Retries When Pod Finishes Successfully](https://github.com/kubernetes/kubernetes/issues/115688).
+
+The condition is added if the pod exceeds the specified timeout, similarly
+as currently the pod's `.status.reason` and `.status.message` fields are set.
+Note that, it means that the pod's containers may terminate on their own
+in-between detection of the condition, and actual killing of the containers.
 
 ##### Admission failures
 
@@ -1712,6 +1717,9 @@ Second iteration:
  - Extend Kubelet to mark as failed pending terminating pods (see: [Marking pods as Failed](#marking-pods-as-failed)).
  - Extend the feature documentation to explain transitioning of pending and
    terminating pods into `Failed` phase.
+
+Third iteration (1.28):
+- Introduce `ActiveDeadlineExceeded` condition for pods which exceeded the timeout
 
 #### GA
 
