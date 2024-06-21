@@ -1686,8 +1686,8 @@ We expect no non-infra related flakes in the last month as a GA graduation crite
 -->
 The following scenario are covered with e2e tests:
 - [sig-apps#gce](https://testgrid.k8s.io/sig-apps#gce):
-  - Job Using a pod failure policy to not count some failures towards the backoffLimit Ignore DisruptionTarget condition
-  - Job Using a pod failure policy to not count some failures towards the backoffLimit Ignore exit code 137
+  - Job should allow to use a pod failure policy to ignore failure for an evicted pod; matching on the DisruptionTarget condition
+  - Job should allow to use a pod failure policy to ignore failure for an evicted pod; matching on the exit code
   - Job should allow to use the pod failure policy on exit code to fail the job early
   - Job should allow to use the pod failure policy to not count the failure towards the backoffLimit
 - [sig-scheduling#gce-serial](https://testgrid.k8s.io/sig-scheduling#gce-serial):
